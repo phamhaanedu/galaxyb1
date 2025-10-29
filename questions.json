@@ -1,0 +1,24 @@
+{
+  "config": {
+    "timeLimit": 20,
+    "successSound": "success.mp3",
+    "failSound": "error.wav"
+  },
+  "questions": [
+    {
+      "background": "bg1.jpg",
+      "text": "Chọn hình đúng và kéo vào vị trí đã đánh dấu",
+      "correctImage": "apple.png",
+      "x": 120,
+      "y": 180,
+      "options": ["apple.png","banana.png","cherry.png","grape.png"]
+    },
+    {
+      "background": "bg1.jpg",
+      "text": "Thả đúng vào vị trí mục tiêu",
+      "correctImage": "car.png",
+      "x": 640, "y": 120,
+      "options": ["bike.png", "bus.png", "car.png", "train.png", "train.png"]
+    }
+  ]
+}
