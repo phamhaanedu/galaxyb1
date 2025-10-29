@@ -18,7 +18,7 @@
       "text": "Thả đúng vào vị trí mục tiêu",
       "correctImage": "car.png",
       "x": 640, "y": 120,
-      "options": [ "bike.png", "bus.png", "car.png", "train.png", "train.png", "plane.png" ]
+      "options": [ "bike.png", "bus.png", "car.png", "train.png", "plane.png"]
     }
   ]
 }
