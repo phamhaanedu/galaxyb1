@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Drag & Drop Quiz</title>
+  <style>
+    :root{
+      --hud-bg: rgba(0,0,0,.45);
+      --text: #fff;
+      --accent: #4ade80;
+      --warn: #f87171;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0}
+    body{
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      color:var(--text);
+      background:#000 center/cover no-repeat fixed;
+      overflow:hidden;
+    }
+    #targetImg{
+      position:absolute; left:0; top:0; width:auto; height:auto; max-width:30vw; max-height:40vh;
+      pointer-events:none;
+      transition: filter .25s ease;
+      filter: drop-shadow(0 8px 18px rgba(0,0,0,.35));
+    }
+    #targetImg.correct-flash{ filter: brightness(1.35) saturate(1.2); }
+    .hud{ position:fixed; left:0; right:0; bottom:0; padding:10px; display:flex; flex-direction:column; gap:10px; }
+    .options{ display:flex; align-items:center; justify-content:space-evenly; gap:12px; padding:12px; background:var(--hud-bg); backdrop-filter: blur(6px); border-top:1px solid rgba(255,255,255,.12); }
+    .option{ width:clamp(84px,16vw,160px); aspect-ratio:1/1; background:#111 center/contain no-repeat; border:2px solid rgba(255,255,255,.15); border-radius:12px; cursor:grab; position:relative; overflow:hidden; transition: transform .15s ease; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+    .option:active{ cursor:grabbing; transform:scale(.97); }
+    .question{ padding:10px 14px; background:var(--hud-bg); backdrop-filter: blur(6px); border-top:1px solid rgba(255,255,255,.12); font-size:clamp(14px, 2.2vw, 20px); }
+    .dragging{ position:fixed; left:0; top:0; transform:translate(-9999px,-9999px); pointer-events:none; z-index:9999; width:clamp(84px,16vw,160px); aspect-ratio:1/1; border-radius:14px; border:2px dashed rgba(255,255,255,.35); background:#111 center/contain no-repeat; box-shadow: 0 10px 24px rgba(0,0,0,.5); }
+    .vanish{ opacity:0; transform: scale(0.65) rotate(10deg); transition: transform .35s ease, opacity .35s ease; }
+    #toast{ position:fixed; left:50%; top:20px; transform:translateX(-50%); padding:10px 14px; background:rgba(0,0,0,.65); border:1px solid rgba(255,255,255,.15); border-radius:12px; display:none; }
+    #toast.show{ display:block; animation: pop .25s ease; }
+    @keyframes pop{ from{ transform:translateX(-50%) translateY(-8px); opacity:0 } to{ transform:translateX(-50%) translateY(0); opacity:1 } }
+    .meta{ position:fixed; left:10px; top:10px; padding:6px 10px; background:var(--hud-bg); border-radius:10px; font-size:14px; display:flex; gap:10px; align-items:center; }
+    .timer{ padding:2px 8px; border-radius:999px; background:rgba(0,0,0,.5); border:1px solid rgba(255,255,255,.15); }
+  </style>
+</head>
+<body>
+  <img id="targetImg" alt="vị trí đặt đúng" />
+  <div class="meta">
+    <span id="progress">Câu 0/0</span> · Đúng: <span id="score">0</span>
+    <span class="timer" id="timer">⏱ 0s</span>
+  </div>
+  <div id="toast"></div>
+  <div class="hud"><div class="options" id="options"></div><div class="question" id="questionText">Đang tải…</div></div>
+  <script>
+  // ====== CONFIG (mặc định, có thể override bằng questions.json) ======
+  const JSON_PATH = './questions.json';
+  const IMG_DIR   = './img/';
+  const SND_DIR   = './audio/'; // thư mục gợi ý chứa âm thanh
+
+  let CONFIG = {
+    timeLimit: 20,              // số giây cho mỗi câu (mặc định)
+    successSound: 'success.mp3',// tên file âm thanh đúng
+    failSound: 'fail.mp3'       // tên file âm thanh sai
+  };
+
+  // ====== STATE ======
+  let questions = [], qIndex = 0, score = 0;
+  let timerId = null, timeLeft = 0;
+  let dragEl = null, srcEl = null;
+  let sfx = { success: null, fail: null };
+
+  const els = {
+    target: document.getElementById('targetImg'),
+    options: document.getElementById('options'),
+    questionText: document.getElementById('questionText'),
+    progress: document.getElementById('progress'),
+    score: document.getElementById('score'),
+    toast: document.getElementById('toast'),
+    timer: document.getElementById('timer')
+  };
+
+  // ====== HELPERS ======
+  const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
+  function showToast(msg,color){ els.toast.textContent=msg; els.toast.style.color=color||'#fff'; els.toast.classList.add('show'); clearTimeout(els.toast._t); els.toast._t=setTimeout(()=>els.toast.classList.remove('show'),1200); }
+  function setBackground(imgFile){ document.body.style.backgroundImage = `url(${IMG_DIR}${imgFile})`; }
+  function setTarget(imgFile,x,y){ els.target.src = IMG_DIR+imgFile; els.target.dataset.filename = imgFile; els.target.style.left = x+'px'; els.target.style.top = y+'px'; }
+  function overlap(a,b){ return !(a.right<b.left||a.left>b.right||a.bottom<b.top||a.top>b.bottom); }
+  function playSound(which){
+    try{
+      const aud = (which==='success'? sfx.success : sfx.fail);
+      if(!aud) return; // chưa có => bỏ qua
+      const node = aud.cloneNode(true);
+      node.currentTime = 0;
+      node.play().catch(()=>{});
+    }catch(e){}
+  }
+  function preloadSounds(){
+    // Cho phép ghi đè đường dẫn đầy đủ trong JSON (nếu có '/'), ngược lại thêm tiền tố SND_DIR
+    const ok = (p)=> p && (p.includes('/')? p : (SND_DIR + p));
+    sfx.success = CONFIG.successSound ? new Audio(ok(CONFIG.successSound)) : null;
+    sfx.fail    = CONFIG.failSound ? new Audio(ok(CONFIG.failSound)) : null;
+  }
+
+  // ====== UI PIECES ======
+  function createDraggable(filename){
+    const div = document.createElement('div');
+    div.className = 'option';
+    div.style.backgroundImage = `url(${IMG_DIR}${filename})`;
+    div.dataset.filename = filename;
+    div.addEventListener('pointerdown', (e)=> startDrag(e, filename, div));
+    return div;
+  }
+
+  function startDrag(e, filename, sourceEl){
+    e.preventDefault();
+    srcEl = sourceEl; if(srcEl) srcEl.style.visibility = 'hidden';
+    dragEl = document.createElement('div');
+    dragEl.className = 'dragging';
+    dragEl.style.backgroundImage = `url(${IMG_DIR}${filename})`;
+    dragEl.dataset.filename = filename;
+    document.body.appendChild(dragEl);
+    moveDrag(e);
+    window.addEventListener('pointermove', moveDrag);
+    window.addEventListener('pointerup', endDrag, { once: true });
+  }
+  function moveDrag(e){ if(!dragEl) return; const r = dragEl.getBoundingClientRect(); const x = e.clientX - (r.width||200)/2; const y = e.clientY - (r.height||200)/2; dragEl.style.transform = `translate(${x}px,${y}px)`; }
+
+  async function endDrag(){
+    if(!dragEl) return;
+    const targetRect = els.target.getBoundingClientRect();
+    const dragRect   = dragEl.getBoundingClientRect();
+    const isOver = overlap(dragRect, targetRect);
+
+    if(isOver){
+      const same = dragEl.dataset.filename === els.target.dataset.filename;
+      if(same){
+        els.target.classList.add('correct-flash');
+        playSound('success');
+        showToast('✅ Chính xác!','var(--accent)');
+        score++; els.score.textContent = score;
+        if(dragEl) dragEl.remove();
+        if(srcEl){ srcEl.remove(); srcEl = null; }
+        await nextQuestion();
+      } else {
+        playSound('fail');
+        showToast('❌ Sai rồi!','var(--warn)');
+        dragEl.classList.add('vanish');
+        dragEl.addEventListener('transitionend', ()=> dragEl && dragEl.remove(), { once:true });
+        if(srcEl){ srcEl.classList.add('vanish'); srcEl.addEventListener('transitionend', ()=> srcEl && srcEl.remove(), { once:true }); srcEl=null; }
+      }
+    } else {
+      if(dragEl) dragEl.remove();
+      if(srcEl){ srcEl.style.visibility=''; srcEl=null; }
+    }
+
+    els.target.classList.remove('correct-flash');
+    window.removeEventListener('pointermove', moveDrag);
+    dragEl = null;
+  }
+
+  function startTimer(){
+    clearInterval(timerId);
+    timeLeft = Math.max(0, Number(CONFIG.timeLimit)||0);
+    updateTimerLabel();
+    if(timeLeft<=0) return; // không giới hạn
+    timerId = setInterval(()=>{
+      timeLeft--; updateTimerLabel();
+      if(timeLeft<=0){
+        clearInterval(timerId);
+        playSound('fail');
+        showToast('⏰ Hết giờ!','var(--warn)');
+        nextQuestion();
+      }
+    }, 1000);
+  }
+  function stopTimer(){ clearInterval(timerId); }
+  function updateTimerLabel(){ els.timer.textContent = `⏱ ${timeLeft}s`; }
+
+  // ====== GAME FLOW ======
+  async function loadJSON(){
+    const res = await fetch(JSON_PATH);
+    if(!res.ok) throw new Error('Không tải được JSON');
+    const data = await res.json();
+    if(Array.isArray(data)){
+      // dạng cũ: chỉ có mảng câu hỏi
+      questions = data;
+    }else{
+      // dạng mới: { config: {...}, questions: [...] }
+      CONFIG = { ...CONFIG, ...(data.config||{}) };
+      questions = Array.isArray(data.questions) ? data.questions : [];
+    }
+    preloadSounds();
+  }
+
+  function renderQuestion(){
+    stopTimer();
+    if(qIndex >= questions.length){ endGame(); return; }
+    const q = questions[qIndex];
+    setBackground(q.background);
+    setTarget(q.correctImage, q.x, q.y);
+    els.questionText.textContent = q.text || '';
+
+    els.options.innerHTML = '';
+    for(const f of q.options){ els.options.appendChild( createDraggable(f) ); }
+
+    els.progress.textContent = `Câu ${qIndex+1}/${questions.length}`;
+    startTimer();
+  }
+
+  async function nextQuestion(){
+    stopTimer();
+    await sleep(550);
+    qIndex++;
+    els.target.src='';
+    renderQuestion();
+  }
+
+  function endGame(){
+    stopTimer();
+    document.body.style.backgroundImage = 'none';
+    els.target.style.display = 'none';
+    els.options.innerHTML = '';
+    els.questionText.innerHTML = `🎉 Hoàn thành! Bạn trả lời đúng <b>${score}</b> / <b>${questions.length}</b> câu.`;
+    showToast('Đã hết câu hỏi!');
+  }
+
+  (async function init(){
+    await loadJSON();
+    renderQuestion();
+  })();
+
+  /* ====== MẪU questions.json (dạng mới có cấu hình) ======
+  {
+    "config": {
+      "timeLimit": 20,
+      "successSound": "correct.mp3",
+      "failSound": "wrong.mp3"
+    },
+    "questions": [
+      {
+        "background": "bg1.jpg",
+        "text": "Chọn hình đúng và kéo vào vị trí đã đánh dấu",
+        "correctImage": "apple.png",
+        "x": 120, "y": 180,
+        "options": ["apple.png", "banana.png", "cherry.png", "grape.png"]
+      }
+    ]
+  }
+
+  // Dạng cũ (chỉ mảng câu hỏi) vẫn chạy, khi đó timeLimit=20s và âm thanh lấy theo tên mặc định.
+  */
+  </script>
+</body>
+</html>
